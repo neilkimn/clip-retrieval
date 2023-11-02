@@ -1,10 +1,11 @@
 """Reader module provides files and webdataset readers"""
 
+import io
 from pathlib import Path
+
 from PIL import Image
 from torch.utils.data import DataLoader
 from torch.utils.data.dataloader import default_collate
-import io
 
 
 def folder_to_keys(folder, enable_text=True, enable_image=True, enable_metadata=False):
@@ -46,7 +47,8 @@ def folder_to_keys(folder, enable_text=True, enable_image=True, enable_metadata=
 def get_image_dataset():
     """retrieve image dataset module without importing torch at the top level"""
 
-    from torch.utils.data import Dataset  # pylint: disable=import-outside-toplevel
+    from torch.utils.data import \
+        Dataset  # pylint: disable=import-outside-toplevel
 
     class ImageDataset(Dataset):
         """ImageDataset is a pytorch Dataset exposing image and text tensors from a folder of image and text"""
@@ -109,6 +111,8 @@ def get_image_dataset():
 
     return ImageDataset
 
+import webdataset as wds
+
 
 def create_webdataset(
     urls,
@@ -120,14 +124,16 @@ def create_webdataset(
     enable_metadata=False,
     cache_path=None,
     input_sampler=lambda a: a,
-):
+    count=-1,
+) -> wds.WebDataset:
     """Create a WebDataset reader, it can read a webdataset of image, text and json"""
     import clip  # pylint: disable=import-outside-toplevel
-    import webdataset as wds  # pylint: disable=import-outside-toplevel
 
-    urls = input_sampler(urls)
+    #urls = input_sampler(urls)
 
     dataset = wds.WebDataset(urls, cache_dir=cache_path, cache_size=10**10, handler=wds.handlers.warn_and_continue)
+    # TODO: Why does the size of the dataset (param `num_data_points` have to be divided by 10 to make WebDataset correct length??)
+    dataset = dataset.with_epoch(int(count/10))
     tokenizer = lambda text: clip.tokenize([text], truncate=True)[0]
 
     def filter_dataset(item):
@@ -219,6 +225,7 @@ class WebdatasetReader:
         input_dataset,
         batch_size,
         num_prepro_workers,
+        num_data_points,
         enable_text=True,
         enable_image=True,
         enable_metadata=False,
@@ -227,7 +234,9 @@ class WebdatasetReader:
         cache_path=None,
     ):
         self.batch_size = batch_size
-        dataset = create_webdataset(
+        self.num_prepro_workers = num_prepro_workers
+        self.count = num_data_points
+        self.dataset = create_webdataset(
             input_dataset,
             preprocess,
             enable_text=enable_text,
@@ -237,8 +246,13 @@ class WebdatasetReader:
             enable_metadata=enable_metadata,
             cache_path=cache_path,
             input_sampler=sampler,
+            count=self.count,
         )
-        self.dataloader = dataset_to_dataloader(dataset, batch_size, num_prepro_workers, "webdataset")
+        self.dataloader = dataset_to_dataloader(self.dataset, self.batch_size, num_prepro_workers, "webdataset")
+
+    def slice_dataset(self, start, end, **kwargs):
+        self.dataset.slice(start, end)
+        self.dataloader = dataset_to_dataloader(self.dataset, self.batch_size, self.num_prepro_workers, "webdataset")
 
     def __iter__(self):
         for batch in self.dataloader:
